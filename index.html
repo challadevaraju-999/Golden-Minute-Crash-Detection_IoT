@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Golden Minute | Team Quantum Coders Telemetry</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { background-color: #080c15; color: #f8fafc; padding: 20px; }
+    .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 15px; margin-bottom: 20px; }
+    .title h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; }
+    .title span { font-size: 13px; color: #38bdf8; font-weight: 600; }
+    .badge { display: flex; align-items: center; gap: 8px; padding: 6px 14px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+    .online { background: rgba(34, 197, 94, 0.15); color: #4ade80; border: 1px solid #22c55e; }
+    .offline { background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid #ef4444; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; }
+    .online .dot { background: #4ade80; box-shadow: 0 0 8px #4ade80; }
+    .offline .dot { background: #f87171; }
+    
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 15px; margin-bottom: 20px; }
+    .card { background: #0f172a; border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 18px; }
+    .label { font-size: 11px; color: #94a3b8; text-transform: uppercase; font-weight: 600; margin-bottom: 8px; }
+    .val { font-size: 28px; font-weight: 700; font-family: monospace; }
+    
+    .main-grid { display: grid; grid-template-columns: 1.2fr 0.8fr; gap: 20px; }
+    @media(max-width: 900px) { .main-grid { grid-template-columns: 1fr; } }
+    #map { height: 380px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.08); }
+    .event-log { background: #0f172a; border-radius: 10px; border: 1px solid rgba(255,255,255,0.08); padding: 15px; height: 380px; overflow-y: auto; font-family: monospace; font-size: 12px; }
+    .log-item { padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,0.05); color: #cbd5e1; }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <div class="title">
+      <h1>GOLDEN MINUTE <span style="color:#64748b;">|</span> <span>TEAM QUANTUM CODERS</span></h1>
+      <p style="font-size: 12px; color: #94a3b8; margin-top: 3px;">Autonomous IoT Vehicle Crash Telemetry & Dispatch System</p>
+    </div>
+    <div id="statusBadge" class="badge offline">
+      <div class="dot"></div>
+      <span id="statusText">SYSTEM OFFLINE / DISCONNECTED</span>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <div class="label">Vector G-Force</div>
+      <div class="val" id="gVal">-- g</div>
+    </div>
+    <div class="card">
+      <div class="label">Pulse Rate (MAX30102)</div>
+      <div class="val" id="bpmVal" style="color: #38bdf8;">-- BPM</div>
+    </div>
+    <div class="card">
+      <div class="label">Triage & Safety Status</div>
+      <div class="val" id="safetyStatus" style="font-size: 20px;">OFFLINE</div>
+    </div>
+    <div class="card">
+      <div class="label">Cloud Last Sync</div>
+      <div class="val" id="syncTime" style="font-size: 17px; color: #94a3b8;">--</div>
+    </div>
+  </div>
+
+  <div class="main-grid">
+    <div id="map"></div>
+    <div class="event-log" id="logBox">
+      <div class="log-item" style="color: #38bdf8;">[SYSTEM BOOT] Cloud polling engine initialized. Waiting for ESP32...</div>
+    </div>
+  </div>
+
+  <script>
+    // ===== ENTER YOUR THINGSPEAK CREDENTIALS HERE =====
+    const CHANNEL_ID = "YOUR_CHANNEL_ID";
+    const READ_API_KEY = "YOUR_READ_API_KEY";
+    const API_URL = `https://api.thingspeak.com/channels/${CHANNEL_ID}/feeds/last.json?api_key=${READ_API_KEY}`;
+
+    let map = L.map('map').setView([13.6288, 79.4192], 13);
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom: 19 }).addTo(map);
+    let marker = L.marker([13.6288, 79.4192]).addTo(map).bindPopup("Vehicle Telemetry Node");
+
+    function addLog(text) {
+      const box = document.getElementById("logBox");
+      const time = new Date().toLocaleTimeString();
+      const div = document.createElement("div");
+      div.className = "log-item";
+      div.innerHTML = `<span style="color:#64748b;">[${time}]</span> ${text}`;
+      box.insertBefore(div, box.firstChild);
+    }
+
+    async function fetchCloudData() {
+      try {
+        const response = await fetch(API_URL);
+        const data = await response.json();
+
+        if (!data || !data.created_at) {
+          goOffline();
+          return;
+        }
+
+        const dataTimestamp = new Date(data.created_at).getTime();
+        const now = new Date().getTime();
+        const diffSeconds = (now - dataTimestamp) / 1000;
+
+        // 25 seconds kante ekkuva gap unte hardware off aindi ani decide chesthundi
+        if (diffSeconds > 25) {
+          goOffline();
+        } else {
+          goOnline(data);
+        }
+      } catch (err) {
+        goOffline();
+      }
+    }
+
+    function goOnline(data) {
+      const badge = document.getElementById("statusBadge");
+      badge.className = "badge online";
+      document.getElementById("statusText").innerText = "LIVE HARDWARE ONLINE";
+
+      const gForce = parseFloat(data.field1) || 1.0;
+      const bpm = parseInt(data.field2) || 0;
+      const status = data.field3;
+      const lat = parseFloat(data.field4) || 13.6288;
+      const lng = parseFloat(data.field5) || 79.4192;
+
+      document.getElementById("gVal").innerText = gForce.toFixed(2) + " g";
+      document.getElementById("bpmVal").innerText = bpm > 0 ? bpm + " BPM" : "-- BPM";
+      document.getElementById("syncTime").innerText = new Date(data.created_at).toLocaleTimeString();
+
+      const safetyElem = document.getElementById("safetyStatus");
+      if (status === "2" || gForce >= 3.5) {
+        safetyElem.innerText = "CRASH CONFIRMED";
+        safetyElem.style.color = "#f87171";
+        addLog(`<span style="color:#ef4444; font-weight:bold;">CRITICAL: Crash alert dispatched! G=${gForce}g, Coords: ${lat}, ${lng}</span>`);
+      } else if (status === "1") {
+        safetyElem.innerText = "COUNTDOWN ACTIVE";
+        safetyElem.style.color = "#fbbf24";
+        addLog(`<span style="color:#fbbf24;">WARNING: Impact detected. 15s abort window active.</span>`);
+      } else {
+        safetyElem.innerText = "NOMINAL / SAFE";
+        safetyElem.style.color = "#4ade80";
+      }
+
+      marker.setLatLng([lat, lng]);
+      map.panTo([lat, lng]);
+    }
+
+    function goOffline() {
+      const badge = document.getElementById("statusBadge");
+      badge.className = "badge offline";
+      document.getElementById("statusText").innerText = "SYSTEM OFFLINE / DISCONNECTED";
+      document.getElementById("gVal").innerText = "-- g";
+      document.getElementById("bpmVal").innerText = "-- BPM";
+      document.getElementById("safetyStatus").innerText = "OFFLINE";
+      document.getElementById("safetyStatus").style.color = "#94a3b8";
+    }
+
+    // Every 3 seconds ki cloud nunchi data check chesthundi
+    setInterval(fetchCloudData, 3000);
+    fetchCloudData();
+  </script>
+</body>
+</html>
